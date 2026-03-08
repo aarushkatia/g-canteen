@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from "react";
+import { supabase } from "./supabaseClient";
 
 // ── MOCK DATA ────────────────────────────────────────────────────────────────
-const ADMIN_CREDS = { username: "admin", password: "gcanteen2025" };
-
 const INITIAL_PRODUCTS = [
   { id: 1, name: "OG Kush", type: "Flower", thc: "24%", price: 350, unit: "3.5g", stock: 12, badge: "🔥 Best Seller", img: "🌿" },
   { id: 2, name: "Blue Dream", type: "Flower", thc: "21%", price: 280, unit: "3.5g", stock: 8, badge: "💎 Premium", img: "💙" },
@@ -18,13 +17,7 @@ const SPECIALS = [
   { label: "VIP Special", desc: "Gelato Concentrate — Free delivery today", color: "#c084fc" },
 ];
 
-const INITIAL_USERS = [
-  { id: 1, username: "shadow_leaf", email: "s@pm.me", status: "approved", joined: "2025-12-01", orders: 4 },
-  { id: 2, username: "greenthumb99", email: "g@pm.me", status: "pending", joined: "2026-01-15", orders: 0 },
-  { id: 3, username: "haze_rider", email: "h@pm.me", status: "approved", joined: "2025-11-20", orders: 11 },
-  { id: 4, username: "kush_queen", email: "k@pm.me", status: "pending", joined: "2026-02-03", orders: 0 },
-  { id: 5, username: "vapor_wolf", email: "v@pm.me", status: "rejected", joined: "2026-01-28", orders: 0 },
-];
+// Users now come from Supabase `members` table
 
 // ── VANISHING CHAT MESSAGES ──────────────────────────────────────────────────
 const VANISH_SECONDS = 30;
@@ -35,7 +28,7 @@ export default function App() {
   const [authState, setAuthState] = useState("guest"); // guest | requesting | approved | admin
   const [currentUser, setCurrentUser] = useState(null);
   const [cart, setCart] = useState([]);
-  const [users, setUsers] = useState(INITIAL_USERS);
+  const [users, setUsers] = useState([]);
   const [products] = useState(INITIAL_PRODUCTS);
   const [adminTab, setAdminTab] = useState("users");
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
@@ -48,6 +41,23 @@ export default function App() {
   ]);
   const [chatInput, setChatInput] = useState("");
   const chatRef = useRef(null);
+
+  const ADMIN_EMAIL = process.env.REACT_APP_ADMIN_EMAIL;
+
+  // Load members from Supabase when admin view is relevant
+  useEffect(() => {
+    const loadMembers = async () => {
+      const { data, error } = await supabase
+        .from("members")
+        .select("*")
+        .order("joined", { ascending: false });
+      if (!error && data) {
+        setUsers(data);
+      }
+    };
+    // Load once when app mounts and whenever auth/admin context might change
+    loadMembers();
+  }, []);
 
   // Vanishing text timer
   useEffect(() => {
@@ -79,40 +89,120 @@ export default function App() {
   const removeFromCart = (id) => setCart(prev => prev.filter(i => i.id !== id));
   const cartTotal = cart.reduce((s, i) => s + i.price * i.qty, 0);
 
-  const handleLogin = () => {
-    if (loginForm.username === ADMIN_CREDS.username && loginForm.password === ADMIN_CREDS.password) {
-      setAuthState("admin");
-      setCurrentUser({ username: "admin", role: "admin" });
-      setPage("admin");
-      setLoginError("");
+  const handleLogin = async () => {
+    setLoginError("");
+    if (!loginForm.username || !loginForm.password) {
+      setLoginError("Enter email and password.");
       return;
     }
-    const user = users.find(u => u.username === loginForm.username);
-    if (!user) { setLoginError("User not found."); return; }
-    if (user.status === "pending") { setLoginError("Your access request is pending admin approval."); return; }
-    if (user.status === "rejected") { setLoginError("Your access has been denied. Contact support."); return; }
-    setAuthState("approved");
-    setCurrentUser(user);
-    setPage("home");
+
+    const { data: authRes, error } = await supabase.auth.signInWithPassword({
+      email: loginForm.username,
+      password: loginForm.password,
+    });
+
+    if (error || !authRes.user) {
+      setLoginError("Invalid credentials.");
+      return;
+    }
+
+    const email = authRes.user.email;
+    const isAdmin = ADMIN_EMAIL && email === ADMIN_EMAIL;
+
+    const { data: memberRows } = await supabase
+      .from("members")
+      .select("*")
+      .eq("email", email)
+      .limit(1);
+
+    const member = memberRows && memberRows[0];
+
+    if (!member && !isAdmin) {
+      setLoginError("No member record found. Request access first.");
+      return;
+    }
+
+    if (!isAdmin) {
+      if (member.status === "pending") {
+        setLoginError("Your access request is pending admin approval.");
+        return;
+      }
+      if (member.status === "rejected") {
+        setLoginError("Your access has been denied. Contact support.");
+        return;
+      }
+    }
+
+    if (isAdmin) {
+      setAuthState("admin");
+      setCurrentUser({ username: email, role: "admin", email });
+      setPage("admin");
+    } else {
+      setAuthState("approved");
+      setCurrentUser(member);
+      setPage("home");
+    }
+
     setLoginError("");
   };
 
-  const handleRegister = () => {
-    if (!registerForm.username || !registerForm.email) { setLoginError("Fill all fields."); return; }
-    const newUser = {
-      id: users.length + 1,
+  const handleRegister = async () => {
+    if (!registerForm.username || !registerForm.email || !registerForm.password) {
+      setLoginError("Fill all fields.");
+      return;
+    }
+
+    const { data: signUpRes, error } = await supabase.auth.signUp({
+      email: registerForm.email,
+      password: registerForm.password,
+      options: {
+        data: { username: registerForm.username },
+      },
+    });
+
+    if (error || !signUpRes.user) {
+      setLoginError("Registration failed. Try a different email.");
+      return;
+    }
+
+    const newMember = {
       username: registerForm.username,
       email: registerForm.email,
       status: "pending",
       joined: new Date().toISOString().slice(0, 10),
       orders: 0,
     };
-    setUsers(prev => [...prev, newUser]);
+
+    const { data: inserted, error: insertError } = await supabase
+      .from("members")
+      .insert(newMember)
+      .select()
+      .single();
+
+    if (!insertError && inserted) {
+      setUsers(prev => [inserted, ...prev]);
+    }
+
     setLoginError("✅ Request submitted. Await admin approval.");
   };
 
-  const handleUserAction = (id, action) => {
-    setUsers(prev => prev.map(u => u.id === id ? { ...u, status: action === "remove" ? "removed" : action } : u).filter(u => u.status !== "removed"));
+  const handleUserAction = async (id, action) => {
+    if (action === "remove") {
+      await supabase.from("members").delete().eq("id", id);
+      setUsers(prev => prev.filter(u => u.id !== id));
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("members")
+      .update({ status: action })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (!error && data) {
+      setUsers(prev => prev.map(u => (u.id === id ? data : u)));
+    }
   };
 
   const sendChat = () => {
@@ -200,11 +290,10 @@ export default function App() {
 
         {showAuth === "login" ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <input placeholder="Username" value={loginForm.username} onChange={e => setLoginForm(p => ({ ...p, username: e.target.value }))} style={{ background: "#0a120a", border: "1px solid #1a3a1a", color: "#c8f0c8", padding: "10px 14px", fontSize: "0.85rem", outline: "none" }} />
+            <input placeholder="Email" value={loginForm.username} onChange={e => setLoginForm(p => ({ ...p, username: e.target.value }))} style={{ background: "#0a120a", border: "1px solid #1a3a1a", color: "#c8f0c8", padding: "10px 14px", fontSize: "0.85rem", outline: "none" }} />
             <input type="password" placeholder="Password" value={loginForm.password} onChange={e => setLoginForm(p => ({ ...p, password: e.target.value }))} onKeyDown={e => e.key === "Enter" && handleLogin()} style={{ background: "#0a120a", border: "1px solid #1a3a1a", color: "#c8f0c8", padding: "10px 14px", fontSize: "0.85rem", outline: "none" }} />
             {loginError && <div style={{ color: loginError.startsWith("✅") ? "#00ff88" : "#ff6666", fontSize: "0.75rem" }}>{loginError}</div>}
             <button onClick={handleLogin} style={{ marginTop: 8, padding: "12px", background: "#00ff8820", border: "1px solid #00ff88", color: "#00ff88", fontSize: "0.8rem", letterSpacing: "0.3em", cursor: "pointer" }}>ENTER</button>
-            <div style={{ fontSize: "0.65rem", color: "#2a4a2a", textAlign: "center", marginTop: 8 }}>Admin: admin / gcanteen2025</div>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
