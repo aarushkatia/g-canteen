@@ -34,6 +34,7 @@ export default function App() {
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [registerForm, setRegisterForm] = useState({ username: "", email: "", password: "", invite: "" });
   const [loginError, setLoginError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
   const [showAuth, setShowAuth] = useState("login"); // login | register
   const [orderPlaced, setOrderPlaced] = useState(false);
   const [chatMessages, setChatMessages] = useState([
@@ -62,14 +63,22 @@ export default function App() {
   // Vanishing text timer
   useEffect(() => {
     const interval = setInterval(() => {
-      setChatMessages(prev =>
-        prev
-          .map(m => {
-            if (!m.fadeAt) return { ...m, fadeAt: m.ts + VANISH_SECONDS * 1000 };
-            return m;
-          })
-          .filter(m => Date.now() < m.fadeAt + 3000)
-      );
+      setChatMessages(prev => {
+        if (prev.length === 0) return prev;
+
+        const updated = prev.map(m => {
+          if (!m.fadeAt) return { ...m, fadeAt: m.ts + VANISH_SECONDS * 1000 };
+          return m;
+        });
+        const next = updated.filter(m => Date.now() < m.fadeAt + 3000);
+
+        // Avoid unnecessary re-renders when nothing actually changed
+        if (next.length === prev.length && next.every((m, i) => m === prev[i])) {
+          return prev;
+        }
+
+        return next;
+      });
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -90,9 +99,12 @@ export default function App() {
   const cartTotal = cart.reduce((s, i) => s + i.price * i.qty, 0);
 
   const handleLogin = async () => {
+    if (authLoading) return;
+    setAuthLoading(true);
     setLoginError("");
     if (!loginForm.username || !loginForm.password) {
       setLoginError("Enter email and password.");
+      setAuthLoading(false);
       return;
     }
 
@@ -103,6 +115,7 @@ export default function App() {
 
     if (error || !authRes.user) {
       setLoginError("Invalid credentials.");
+      setAuthLoading(false);
       return;
     }
 
@@ -119,16 +132,19 @@ export default function App() {
 
     if (!member && !isAdmin) {
       setLoginError("No member record found. Request access first.");
+      setAuthLoading(false);
       return;
     }
 
     if (!isAdmin) {
       if (member.status === "pending") {
         setLoginError("Your access request is pending admin approval.");
+        setAuthLoading(false);
         return;
       }
       if (member.status === "rejected") {
         setLoginError("Your access has been denied. Contact support.");
+        setAuthLoading(false);
         return;
       }
     }
@@ -144,6 +160,7 @@ export default function App() {
     }
 
     setLoginError("");
+    setAuthLoading(false);
   };
 
   const handleRegister = async () => {
@@ -290,10 +307,30 @@ export default function App() {
 
         {showAuth === "login" ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <input placeholder="Email" value={loginForm.username} onChange={e => setLoginForm(p => ({ ...p, username: e.target.value }))} style={{ background: "#0a120a", border: "1px solid #1a3a1a", color: "#c8f0c8", padding: "10px 14px", fontSize: "0.85rem", outline: "none" }} />
-            <input type="password" placeholder="Password" value={loginForm.password} onChange={e => setLoginForm(p => ({ ...p, password: e.target.value }))} onKeyDown={e => e.key === "Enter" && handleLogin()} style={{ background: "#0a120a", border: "1px solid #1a3a1a", color: "#c8f0c8", padding: "10px 14px", fontSize: "0.85rem", outline: "none" }} />
+            <input
+              placeholder="Email"
+              value={loginForm.username}
+              onChange={e => setLoginForm(p => ({ ...p, username: e.target.value }))}
+              disabled={authLoading}
+              style={{ background: "#0a120a", border: "1px solid #1a3a1a", color: "#c8f0c8", padding: "10px 14px", fontSize: "0.85rem", outline: "none", opacity: authLoading ? 0.6 : 1 }}
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={loginForm.password}
+              onChange={e => setLoginForm(p => ({ ...p, password: e.target.value }))}
+              onKeyDown={e => e.key === "Enter" && handleLogin()}
+              disabled={authLoading}
+              style={{ background: "#0a120a", border: "1px solid #1a3a1a", color: "#c8f0c8", padding: "10px 14px", fontSize: "0.85rem", outline: "none", opacity: authLoading ? 0.6 : 1 }}
+            />
             {loginError && <div style={{ color: loginError.startsWith("✅") ? "#00ff88" : "#ff6666", fontSize: "0.75rem" }}>{loginError}</div>}
-            <button onClick={handleLogin} style={{ marginTop: 8, padding: "12px", background: "#00ff8820", border: "1px solid #00ff88", color: "#00ff88", fontSize: "0.8rem", letterSpacing: "0.3em", cursor: "pointer" }}>ENTER</button>
+            <button
+              onClick={handleLogin}
+              disabled={authLoading}
+              style={{ marginTop: 8, padding: "12px", background: "#00ff8820", border: "1px solid #00ff88", color: "#00ff88", fontSize: "0.8rem", letterSpacing: "0.3em", cursor: authLoading ? "default" : "pointer", opacity: authLoading ? 0.7 : 1 }}
+            >
+              {authLoading ? "ENTERING..." : "ENTER"}
+            </button>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
